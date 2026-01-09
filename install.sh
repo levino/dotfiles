@@ -2,6 +2,8 @@
 
 echo "Installing dotfiles..."
 
+sudo chsh -s /bin/zsh $(whoami)
+
 # Append .zshrc if it exists
 if [ -f ".zshrc" ]; then
     echo "" >> ~/.zshrc
