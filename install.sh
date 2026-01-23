@@ -28,4 +28,11 @@ if [ -f ".gitconfig" ]; then
     echo "✓ Appended .gitconfig"
 fi
 
+# Install .claude folder for Claude Code
+if [ -d ".claude" ]; then
+    mkdir -p ~/.claude
+    cp -r .claude/* ~/.claude/
+    echo "✓ Installed .claude folder"
+fi
+
 echo "Dotfiles installation complete!"
