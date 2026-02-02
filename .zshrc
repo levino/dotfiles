@@ -1,1 +1,1 @@
-alias goclaude='npx -y @anthropic-ai/claude-code --dangerously-skip-permissions'
+alias goclaude='claude --dangerously-skip-permissions'
