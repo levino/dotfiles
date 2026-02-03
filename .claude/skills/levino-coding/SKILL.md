@@ -61,6 +61,39 @@ Levin Keller's (levino) coding style and opinions.
   - Use result containers (Either/Effect) to represent success/failure
   - Map over the happy path, errors short-circuit the chain automatically
   - No explicit error checking at each step - the container handles it
+- Structure: Schema → small transform functions → happy path pipe → error handler → exported handler
+- Validate input with Effect Schema (Schema.Struct, Schema.decodeUnknown)
+- Wrap side effects in Effect.try, chain with Effect.flatMap
+- Keep happy path pipe pure, handle errors at the call site with Effect.catchAll
+- Effect.runPromise stays outside the business logic pipe
+- Example (API route with Effect):
+  ```typescript
+  const RequestBody = Schema.Struct({ token: Schema.NonEmptyString })
+
+  const tokenToResult = (token: string) =>
+    Effect.try(() => { /* side effects here */ })
+
+  const formatResult = (result: string) =>
+    new Response("OK", { status: 200, headers: { "X-Result": result } })
+
+  const handleRequest = (context: APIContext) =>
+    pipe(
+      context,
+      Struct.get("request"),
+      Schema.decodeUnknown(RequestBody),
+      Effect.map(({ token }) => token),
+      Effect.flatMap(tokenToResult),
+      Effect.map(formatResult),
+    )
+
+  const handleError = () =>
+    Effect.succeed(new Response("Invalid request", { status: 400 }))
+
+  export const POST: APIRoute = (context) =>
+    Effect.runPromise(
+      pipe(handleRequest(context), Effect.catchAll(handleError)),
+    )
+  ```
 </patterns>
 
 <side-effects>
