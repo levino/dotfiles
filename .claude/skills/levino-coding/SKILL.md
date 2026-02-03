@@ -8,10 +8,10 @@ user-invocable: false
 
 Levin Keller's (levino) coding style and opinions.
 
+IMPORTANT: Generated code must never contain comments or JSDoc. This skill file uses comments only to teach the pattern to the AI.
+
 <language>
-- TypeScript is the default choice when no specific setup exists
-- Strict TypeScript always - types are living documentation
-- Proficient in TypeScript, prefer it for all new code
+- TypeScript always, strict mode
 - type vs interface: follow official TypeScript best practices
 </language>
 
@@ -22,180 +22,155 @@ Levin Keller's (levino) coding style and opinions.
 </tooling>
 
 <libraries>
-- Effect (https://effect.website/) - preferred for functional TypeScript
-  - Use for functional pipes, compositions, and option handling
-  - Useful for complex applications where error tracking becomes difficult
-  - Nice to have, not always necessary - don't always bring out the big guns
-- Ramda, fp-ts - historically used, but Effect is the current preference
-  - fp-ts has largely been absorbed into Effect
+- Effect (https://effect.website/) is the default for any non-trivial logic
+  - Use pipe/flow for all transformations
+  - Use Schema for input validation
+  - Use Effect.try for wrapping side effects
+  - Use Effect.tryPromise for wrapping async side effects
+  - Use Either for simple synchronous branching without side effects
+- Effect replaces: Ramda, fp-ts, lodash, manual validation
 </libraries>
 
 <functional-programming>
-- Composition over imperative code
-- Use `flow` and `pipe` to compose transformations
-- Prefer point-free style and expression bodies (no curly braces) over function bodies
-- Prefer functions over methods: use Effect's Array functions within flow
-  - Good: `flow(Array.filter(...), Array.sort(...))`
-  - Acceptable: brief method chains for simple cases
-  - Avoid: multiple intermediate variable assignments
-- Prefer immutability - avoid mutation when possible
-- Use map(), reduce() instead of loops with mutation
+- Everything is composition: data in, data out
+- Use `pipe` to compose transformations, `flow` for point-free function composition
+- Expression bodies (no curly braces) over function bodies wherever possible
+- No intermediate variables - inline or extract to a named function instead
+  - Bad: `const x = getA(); const y = transform(x); return format(y);`
+  - Good: `pipe(getA(), transform, format)`
+- No mutation - use map/reduce/filter, never loops with mutation
 </functional-programming>
 
+<effect-pattern>
+This is the core pattern. Every function that does something non-trivial should follow this structure.
+
+1. Define a Schema for input validation
+2. Write small, single-purpose transform functions
+3. Compose them in a pipe (happy path only)
+4. Handle errors at the call site, not inside the pipe
+5. Effect.runPromise stays at the outermost edge
+
+```typescript
+// 1. Schema validates input - replaces all manual if/else checking
+const RequestBody = Schema.Struct({ token: Schema.NonEmptyString })
+
+// 2. Small function: wraps side effects in Effect.try so errors land in the error channel
+const tokenToResult = (token: string) =>
+  Effect.try(() => {
+    const service = new ExternalService(CONFIG)
+    service.save(token)
+    return service.getResult()
+  })
+
+// 3. Small function: pure data transformation, no Effect needed
+const formatResult = (result: string) =>
+  new Response("OK", { status: 200, headers: { "X-Result": result } })
+
+// 4. Happy path pipe: reads top to bottom, each step transforms the data
+//    Errors from Schema or Effect.try automatically short-circuit (railway oriented programming, see https://fsharpforfunandprofit.com/rop/)
+const handleRequest = (context: APIContext) =>
+  pipe(
+    context,
+    Struct.get("request"),            // APIContext → Request
+    Schema.decodeUnknown(RequestBody), // Request → Effect<{ token }, ParseError>
+    Effect.map(Struct.get("token")),  // → Effect<string>
+    Effect.flatMap(tokenToResult),    // → Effect<string, UnknownException>
+    Effect.map(formatResult),         // → Effect<Response>
+  )
+
+// 5. Error handler: separate from happy path, at the call site
+const handleError = () =>
+  Effect.succeed(new Response("Invalid request", { status: 400 }))
+
+// 6. Exported handler: glues happy path + error handling, runs the Effect
+export const POST: APIRoute = (context) =>
+  Effect.runPromise(
+    pipe(handleRequest(context), Effect.catchAll(handleError)),
+  )
+```
+</effect-pattern>
+
 <async>
-- Prefer Promise chains over async/await
-- Promise chains resemble flow/pipe chains - data flows through visibly
-- async/await encourages unnecessary intermediate variables that are hard to name
+- Never use async/await
+- For promises: use .then() chains or wrap in Effect.tryPromise
+- async/await encourages intermediate variables that are hard to name
+- With Effect, async is just another Effect in the pipe - no special syntax needed
 </async>
 
 <error-handling>
-- Either let errors throw, or handle them locally
 - Never return encoded errors like { success: true, data } or { error: ... }
-- Returning values that encode errors is an abuse of JavaScript
-- If you want result-type error handling, use a proper container (Effect)
+- Use Effect's error channel (the "left" side) for expected errors
+- Effect.try / Effect.tryPromise capture exceptions into the error channel
+- Effect.catchAll at the call site converts errors to responses
+- Effect.mapError to transform errors without handling them
+- For simple code without Effect: let errors throw naturally
 </error-handling>
 
-<patterns>
-- Composition through pipes: data in, data out
-- Railroad-oriented programming (for complex applications):
-  - Use result containers (Either/Effect) to represent success/failure
-  - Map over the happy path, errors short-circuit the chain automatically
-  - No explicit error checking at each step - the container handles it
-- Structure: Schema → small transform functions → happy path pipe → error handler → exported handler
-- Validate input with Effect Schema (Schema.Struct, Schema.decodeUnknown)
-- Wrap side effects in Effect.try, chain with Effect.flatMap
-- Keep happy path pipe pure, handle errors at the call site with Effect.catchAll
-- Effect.runPromise stays outside the business logic pipe
-- Example (API route with Effect):
-  ```typescript
-  const RequestBody = Schema.Struct({ token: Schema.NonEmptyString })
-
-  const tokenToResult = (token: string) =>
-    Effect.try(() => { /* side effects here */ })
-
-  const formatResult = (result: string) =>
-    new Response("OK", { status: 200, headers: { "X-Result": result } })
-
-  const handleRequest = (context: APIContext) =>
-    pipe(
-      context,
-      Struct.get("request"),
-      Schema.decodeUnknown(RequestBody),
-      Effect.map(({ token }) => token),
-      Effect.flatMap(tokenToResult),
-      Effect.map(formatResult),
-    )
-
-  const handleError = () =>
-    Effect.succeed(new Response("Invalid request", { status: 400 }))
-
-  export const POST: APIRoute = (context) =>
-    Effect.runPromise(
-      pipe(handleRequest(context), Effect.catchAll(handleError)),
-    )
-  ```
-</patterns>
-
 <side-effects>
-- Functions with side effects must not have a return value
-- Return void or Promise<void> to signal side effects from the signature
-- This makes it clear from the type that the function has side effects
-- Pure functions return values, side-effecting functions return void
+- Raw functions with side effects must return void or Promise<void>
+- Exception: when wrapped in Effect.try / Effect.tryPromise, the Effect container signals the side effect
+- Pure functions return values, side-effecting functions return void (or an Effect)
 </side-effects>
 
 <naming>
-- Always use camelCase
-- No shortcuts or abbreviations ever
-- Names must be descriptive and self-explanatory
-- Good function names eliminate the need for comments
-- Good: `getUsersByAge`, `calculateAveragePrice`, `filterActiveSubscriptions`
-- Bad: `u` for users, `calc`, `doFilter`, `data`, `x`
-- Variables (when necessary) follow same rules: `activeUsers`, `totalRevenue`
+- camelCase always
+- No abbreviations ever: `pocketBase` not `pb`, `response` not `res`, `request` not `req`
+- Function names must be self-explanatory: `tokenToCookie`, `createResponseToSetCookie`, `handleError`
+- If you need a comment to explain what a function does, the name is wrong
 </naming>
 
 <documentation>
-- Avoid comments - let clear function names and TypeScript types document the code
-- No JSDoc comments - they duplicate what code says and become stale
-- When code feels complex enough to warrant a comment, extract to a well-named function instead
-  - Provides clarity through naming
-  - Extracted functions can be unit tested
-  - Extracted logic can be reused
-- Complex boolean logic and transformations: extract into named functions
+- No comments in generated code - function names and types are the documentation
+- No JSDoc - it duplicates what code says and becomes stale
+- When logic feels complex: extract to a well-named function instead of commenting
 </documentation>
 
 <commits>
 - Imperative mood: "Enable user login" not "Enabled user login"
-- Describe the feature/behavior change from a user/business perspective
-- Commits are puzzle pieces: "what feature do I get if I apply this commit?"
-- Never describe implementation details or code changes
-- AI can summarize code changes; the commit message explains the value
+- Describe the value/behavior change, not the implementation
 - Good: "Enable user login", "Add password reset flow"
 - Bad: "Add loginUser function", "Update auth.ts with new method"
 </commits>
 
 <principles>
 - Functional programming over object-oriented
-- Classes are forbidden, not discouraged - forbidden
-  - Only exception: proven performance gains (measured first)
-- Use factories when state is needed, plain functions when not
-- Readability over performance - humans read code, make it easy for them
-- No optimization without measuring first
-- Code is usually fast enough; only optimize when it's a proven problem
+- Classes are forbidden - no exceptions unless measured performance necessity
+- Readability over performance - only optimize when it's a proven problem
 </principles>
 
 <testing>
-- Everything needs to be tested
+- TDD is mandatory: red → green → refactor → repeat
 - Framework: Vitest
-- TDD (Test-Driven Development) is mandatory:
-  1. Write a test for functionality that doesn't exist yet
-  2. Test fails (red)
-  3. Write minimal code to make the test pass (green)
-  4. Write the next test, it fails
-  5. Extend the function to make it pass
-  6. Previous tests stay in place
-  7. Repeat
+- Write the test first, then the minimal code to make it pass
 </testing>
 
 <forbidden>
-- Classes (except measured performance necessity)
-- Premature optimization (measure first, always)
-- Writing code before writing tests
-- Comments and JSDoc (extract to functions instead)
+- Classes
+- async/await
+- Comments and JSDoc in generated code
 - Abbreviations and short variable names
-- Functions that have both side effects and return values
+- Intermediate variables (extract to named functions instead)
 - Returning encoded errors like { success, data } or { error }
-- async/await (use Promise chains instead)
-- Implicit dependency injection
-- Reading environment variables in deep files
+- Functions that have both side effects and return values (unless wrapped in Effect)
+- Reading environment variables in deep files (top-level only, pass down explicitly)
+- Premature optimization
 </forbidden>
 
 <structure>
-- Use barrel files (index.ts) for clean public APIs
-- Import rule: a file should only import from subfolders of its own folder
-  - No importing from siblings or parent directories
-- Structure depends on project type (Astro routing, libraries, etc.)
+- Barrel files (index.ts) for clean public APIs
+- A file should only import from subfolders of its own folder
+- No importing from siblings or parent directories
 </structure>
 
 <dependency-injection>
-- If using Effect: use Effect's dependency injection (superb and type-safe)
-- No implicit dependency injection
-- Top-level file may read from environment, then pass everything down explicitly
-- Deep files must never change behavior based on environment variables
-  - Even logging should be injected
-- Vitest module mocking is acceptable
+- Top-level file reads environment, passes everything down explicitly
+- Deep files must never read environment variables
+- With Effect: use Effect's built-in dependency injection (Layers, Services)
+- Vitest module mocking is acceptable for testing
 </dependency-injection>
 
 <claude-interaction>
 - Assume fair knowledge of technology - don't over-explain basics
-- Do explain unusual patterns or unexpected behavior
-- Workarounds require special handling:
-  - Explain what was tried and why it didn't work
-  - Reference the issue/discussion in a code comment
-  - Highlight to user without interrupting workflow
+- When refactoring: produce the Effect pipe pattern immediately, don't start with imperative code
+- When writing new code: Schema first, then small functions, then pipe, then error handler
 </claude-interaction>
-
-<avoid>
-- Data mutation (prefer immutability, but not absolute)
-- Multiple intermediate variable assignments
-- Importing from parent or sibling directories
-</avoid>
