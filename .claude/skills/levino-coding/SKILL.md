@@ -1,3 +1,9 @@
+---
+name: levino-coding
+description: Levin Keller's coding style preferences. Always apply when writing, reviewing, or refactoring code - functional programming, no classes, no async/await, TDD, Vitest, no comments.
+user-invocable: false
+---
+
 # Levino Coding
 
 Levin Keller's (levino) coding style and opinions.
